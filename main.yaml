@@ -24,16 +24,16 @@
     jwt_expiry_timeframe: 3600
 
   tasks:
-    - name: Create the hng user
+    - name: Create hng user
       user:
         name: "{{ app_user }}"
         groups: sudo
         shell: /bin/bash
 
-    - name: Update the apt cache
+    - name: Update apt cache
       apt: update_cache=yes
     
-    - name: Install node.js
+    - name: Install Node.js
       shell: |
         curl -fsSL https://deb.nodesource.com/setup_14.x | sudo -E bash -
         sudo apt-get install -y nodejs
@@ -102,19 +102,19 @@
         state: present
         filename: nginx
         
-    - name: Install Nginx 
+    - name: Install Nginx 1.26
       apt:
         name: nginx=1.26.*
         state: present
         update_cache: yes
         allow_downgrade: yes
 
-    - name: Install nestjs CLI globally
+    - name: Install Nestjs CLI globally
       npm:
         name: '@nestjs/cli'
         global: yes
 
-    - name: Install app dependencies
+    - name: Install project dependencies
       npm:
         path: "{{ app_dir }}"
       become: yes
@@ -140,7 +140,7 @@
         owner: "{{ app_user }}"
         group: "{{ app_user }}"
         mode: '0600'
-      notify: Restart the application
+      notify: Restart application
 
     - name: Configure PostgreSQL
       become: yes
@@ -239,7 +239,7 @@
         state: absent
       notify: Restart Nginx
 
-    - name: Set up the custom Nginx configuration
+    - name: Set up custom Nginx configuration
       template:
         src: nginx.conf.j2
         dest: /etc/nginx/conf.d/app.conf
@@ -248,7 +248,7 @@
         group: root
       notify: Restart Nginx
 
-    - name: Create the log directory
+    - name: Create log directory
       file:
         path: "{{ log_dir }}"
         state: directory
@@ -256,7 +256,7 @@
         group: "{{ app_user }}"
         mode: '0755'
 
-    - name: Create the log files
+    - name: Create log files
       file:
         path: "{{ item }}"
         state: touch
@@ -283,13 +283,13 @@
         name: nginx
         state: restarted
 
-    - name: Restart the nestj application
+    - name: Restart application
       systemd:
         name: nestjs
         state: restarted
         daemon_reload: yes
 
-    - name: Enable nestjs-app service
+    - name: Enable application service
       systemd:
         name: nestjs
         enabled: yes
