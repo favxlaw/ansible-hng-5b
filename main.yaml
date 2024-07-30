@@ -1,0 +1,296 @@
+---
+- name: Deploy Hng-Stag5b NestJS Boilerplate
+  hosts: hng
+  become: yes
+
+  vars:
+    app_dir: /opt/stage_5b
+    rabbitmq_password: guest
+    log_dir: /var/log/stage_5b
+    app_user: hng 
+    db_name: psqladmin
+    db_user: admin
+    db_password: psqlpassword
+    profile: local
+    node_env: development
+    port: 3000
+    db_host: localhost
+    db_port: 5432
+    db_entities: "dist/src/modules/**/entities/**/*.entity{.ts,.js}"
+    db_migrations: "dist/**/migrations/*{.ts,.js}"
+    db_type: postgres
+    db_ssl: "false"
+    jwt_secret: someSecrets
+    jwt_expiry_timeframe: 3600
+
+  tasks:
+    - name: Create the hng user
+      user:
+        name: "{{ app_user }}"
+        groups: sudo
+        shell: /bin/bash
+
+    - name: Update the apt cache
+      apt: update_cache=yes
+    
+    - name: Install node.js
+      shell: |
+        curl -fsSL https://deb.nodesource.com/setup_14.x | sudo -E bash -
+        sudo apt-get install -y nodejs
+
+    - name: Install ACL
+      apt:
+        name: acl
+        state: present
+      become: yes
+
+    - name: Check if app directory exists and is not empty
+      stat:
+        path: "{{ app_dir }}"
+      register: app_dir_stat
+
+    - name: Remove existing app directory if it exists and is not empty
+      file:
+        path: "{{ app_dir }}"
+        state: absent
+      when: app_dir_stat.stat.exists and app_dir_stat.stat.size > 0
+      become: yes
+
+    - name: Ensure app directory exists
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        mode: '0755'
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+      become: yes
+
+    - name: Clone repository
+      become: yes
+      become_user: "{{ app_user }}"
+      git:
+        repo: 'https://github.com/hngprojects/hng_boilerplate_nestjs.git'
+        version: devops
+        dest: "{{ app_dir }}"
+        force: yes
+
+    - name: Ensure app_user owns app directory
+      file:
+        path: "{{ app_dir }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        recurse: yes
+      become: yes
+
+    - name: Install base dependencies
+      apt:
+        name: 
+          - git 
+          - npm
+          - postgresql
+          - ufw
+        state: present
+
+    - name: Add Nginx GPG key
+      apt_key:
+        url: 'https://nginx.org/keys/nginx_signing.key'
+        state: present
+        
+    - name: Add Nginx official repository
+      apt_repository:
+        repo: 'deb http://nginx.org/packages/ubuntu/ {{ ansible_distribution_release | lower }} nginx'
+        state: present
+        filename: nginx
+        
+    - name: Install Nginx 
+      apt:
+        name: nginx=1.26.*
+        state: present
+        update_cache: yes
+        allow_downgrade: yes
+
+    - name: Install nestjs CLI globally
+      npm:
+        name: '@nestjs/cli'
+        global: yes
+
+    - name: Install app dependencies
+      npm:
+        path: "{{ app_dir }}"
+      become: yes
+
+    - name: Creating .env file
+      copy:
+        content: |
+          PROFILE={{ profile }}
+          NODE_ENV={{ node_env }}
+          PORT={{ port }}
+          DB_USERNAME={{ db_user }}
+          DB_PASSWORD={{ db_password }}
+          DB_DATABASE={{ db_name }}
+          DB_HOST={{ db_host }}
+          DB_PORT={{ db_port }}
+          DB_ENTITIES={{ db_entities }}
+          DB_MIGRATIONS={{ db_migrations }}
+          DB_TYPE={{ db_type }}
+          DB_SSL={{ db_ssl }}
+          JWT_SECRET={{ jwt_secret }}
+          JWT_EXPIRY_TIMEFRAME={{ jwt_expiry_timeframe }}
+        dest: "{{ app_dir }}/.env"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0600'
+      notify: Restart the application
+
+    - name: Configure PostgreSQL
+      become: yes
+      become_user: postgres
+      shell: |
+        psql -c "CREATE DATABASE {{ db_name }};"
+        psql -c "CREATE USER {{ db_user }} WITH ENCRYPTED PASSWORD '{{ db_password }}';"
+        psql -c "GRANT ALL PRIVILEGES ON DATABASE {{ db_name }} TO {{ db_user }};"
+        psql -d {{ db_name }} -c "GRANT USAGE ON SCHEMA public TO {{ db_user }};"
+        psql -d {{ db_name }} -c "GRANT CREATE ON SCHEMA public TO {{ db_user }};"
+        psql -d {{ db_name }} -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {{ db_user }};"
+      args:
+        executable: /bin/bash
+
+    - name: Create secrets directory
+      file:
+        path: /var/secrets
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Save PostgreSQL credentials
+      copy:
+        content: "DB_USER={{ db_user }}\nDB_PASSWORD={{ db_password }}"
+        dest: /var/secrets/pg_pw.txt
+        mode: '0600'
+
+    - name: Install typeorm globally
+      npm:
+        name: typeorm
+        global: yes
+        state: present
+
+    
+    - name: Install RabbitMQ
+      apt:
+        name: rabbitmq-server
+        state: present
+        update_cache: yes
+
+    - name: Set RabbitMQ default user and password
+      ansible.builtin.shell:
+        cmd: rabbitmqctl change_password guest {{ rabbitmq_password }}
+
+    - name: Ensure RabbitMQ service is enabled and started
+      systemd:
+        name: rabbitmq-server
+        state: started
+        enabled: yes
+      become: yes
+
+    - name: Configure UFW
+      block:
+        - name: Reset UFW to default
+          ufw:
+            state: reset
+          become: yes
+
+        - name: Allow SSH (port 22)
+          ufw:
+            rule: allow
+            port: '22'
+          become: yes
+
+        - name: Allow HTTP (port 80)
+          ufw:
+            rule: allow
+            port: '80'
+          become: yes
+
+        - name: Deny access to port 3000
+          ufw:
+            rule: deny
+            port: '3000'
+          become: yes
+
+        - name: Enable UFW
+          ufw:
+            state: enabled
+          become: yes
+
+      rescue:
+        - name: UFW Status
+          command: ufw status
+          register: ufw_status
+          become: yes
+
+        - name: Display UFW Status
+          debug:
+            var: ufw_status.stdout_lines
+    
+    - name: Remove default Nginx configuration
+      file:
+        path: /etc/nginx/conf.d/default.conf
+        state: absent
+      notify: Restart Nginx
+
+    - name: Set up the custom Nginx configuration
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/conf.d/app.conf
+        mode: '0644'
+        owner: root
+        group: root
+      notify: Restart Nginx
+
+    - name: Create the log directory
+      file:
+        path: "{{ log_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0755'
+
+    - name: Create the log files
+      file:
+        path: "{{ item }}"
+        state: touch
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+      loop:
+        - "{{ log_dir }}/error.log"
+        - "{{ log_dir }}/out.log"
+
+    - name: Build NestJS application
+      shell: cd {{ app_dir }} && npm run build
+      become_user: "{{ app_user }}"
+
+    - name: Set up systemd service
+      template:
+        src: nestjs.service.j2
+        dest: /etc/systemd/system/nestjs.service
+      notify: Restart application
+
+  handlers:
+    - name: Restart Nginx
+      systemd:
+        name: nginx
+        state: restarted
+
+    - name: Restart the nestj application
+      systemd:
+        name: nestjs
+        state: restarted
+        daemon_reload: yes
+
+    - name: Enable nestjs-app service
+      systemd:
+        name: nestjs
+        enabled: yes
+        state: started

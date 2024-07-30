@@ -1,0 +1,15 @@
+[Unit]
+Description=NestJS Application
+After=network.target
+
+[Service]
+Environment=HOST=127.0.0.1
+User={{ app_user }}
+WorkingDirectory={{ app_dir }}
+ExecStart=/usr/bin/npm run start:dev
+Restart=always
+StandardOutput=append:{{ log_dir }}/out.log
+StandardError=append:{{ log_dir }}/error.log
+
+[Install]
+WantedBy=multi-user.target
